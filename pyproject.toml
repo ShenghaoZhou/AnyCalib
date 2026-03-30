@@ -7,23 +7,60 @@ build-backend = "setuptools.build_meta"
 include = ["anycalib*"]
 
 [tool.ruff]
-src=["anycalib","tests","siclib"]
+src = ["anycalib", "tests", "siclib"]
 
 [tool.ruff.lint.isort]
-known-first-party=["anycalib","tests","siclib"]
+known-first-party = ["anycalib", "tests", "siclib"]
 
 [project]
 name = "anycalib"
 version = "1.0"
-authors = [
-    {name = "Javier Tirado Garin", email = "jtiradogarin@gmail.com"},
-]
+authors = [{ name = "Javier Tirado Garin", email = "jtiradogarin@gmail.com" }]
 description = "AnyCalib - Single View Calibration"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = { file = "LICENSE" }
 dependencies = ["torch"]
 
 [project.optional-dependencies]
-eff = ["xformers"]
+eff = ["xformers>=0.0.27"]
 viz = ["matplotlib"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.system-requirements]
+cuda="12"
+[tool.pixi.dependencies]
+python = ">=3.10"
+
+# Based on siclib/requirements.txt
+opencv = ">=4.6"
+matplotlib = "*"
+omegaconf = ">=2.3"
+albumentations = "*"
+h5py = "*"
+hydra-core = ">=1.3"
+pandas = "*"
+tqdm = "*"
+tensorboard = "*"
+wandb = "*"
+gdown = "*"
+kornia = ">=0.7"
+pytorch-gpu = "*"
+torchvision = "*"
+
+[tool.pixi.pypi-dependencies]
+anycalib = { path = ".", editable = true }
+siclib = { path = "siclib", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+eff = { features = ["eff"], solve-group = "default" }
+viz = { features = ["viz"], solve-group = "default" }
+train = { features = ["eff", "viz"], solve-group = "default" }
+
+[tool.pixi.tasks]
+test-import = "python -c 'import anycalib; import siclib; print(\"Imports successful\")'"
+eval-lamar-p = "python -m siclib.eval.lamar2k_rays --conf anycalib_pretrained --tag anycalib_p --overwrite"
