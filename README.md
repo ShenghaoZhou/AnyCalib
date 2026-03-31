@@ -10,7 +10,30 @@
   [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-blue?style=flat)](https://huggingface.co/javrtg/AnyCalib)
 
 </div>
+## our usage 
 
+```shell
+# 1. Re-export model
+python export_onnx.py --model_id anycalib_gen --output anycalib_gen.onnx
+python export_trt.py --onnx anycalib_gen.onnx --engine anycalib_gen.engine
+# 2. Recompile C++ (assuming you have a build script or use cmake)
+# e.g., bash cpp/build.sh
+# 3. Run with 'kb4' flag for fisheye images
+pixi run ./cpp/anycalib_inference anycalib_gen.engine images/fisheye-skyline.jpg kb4
+```
+
+
+```shell
+# 1. Re-export model
+python export_onnx.py --model_id anycalib_gen --output anycalib_gen.onnx
+python export_trt.py --onnx anycalib_gen.onnx --engine anycalib_gen.engine
+# 2. Recompile C++ (assuming you have a build script or use cmake)
+# e.g., bash cpp/build.sh
+# 3. Run with 'kb4' flag for fisheye images
+pixi run ./cpp/anycalib_inference anycalib_gen.engine images/fisheye-skyline.jpg kb4
+# 4. Run with 'pinhole' flag for perspective images
+pixi run ./cpp/anycalib_inference anycalib_pinhole.engine images/your_perspective_image.jpg pinhole
+```
 
 ## Usage (pretrained models)
 

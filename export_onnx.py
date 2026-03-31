@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn as nn
 from anycalib.model.anycalib_pretrained import AnyCalib
@@ -18,9 +19,13 @@ class AnyCalibNN(nn.Module):
         out = self.backbone(image)
         out = self.decoder(out)
         out = self.head(out)
-        return out["rays"], out["tangent_coords"]
+        # Note: 'fov_field' is just an alias for 'tangent_coords'
+        rays = out["rays"].permute(0, 2, 3, 1).flatten(1, 2)
+        tangent_coords = out["tangent_coords"].permute(0, 2, 3, 1).flatten(1, 2)
+        return rays, tangent_coords
 
 def export_to_onnx(model_id="anycalib_pinhole", output_path="anycalib_nn.onnx"):
+    print(f"Exporting model {model_id} to {output_path}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = AnyCalibNN(model_id).to(device)
     
@@ -38,10 +43,19 @@ def export_to_onnx(model_id="anycalib_pinhole", output_path="anycalib_nn.onnx"):
         input_names=['image'],
         output_names=['rays', 'tangent_coords'],
         dynamic_axes={'image': {0: 'batch_size', 2: 'height', 3: 'width'},
-                      'rays': {0: 'batch_size', 2: 'height', 3: 'width'},
-                      'tangent_coords': {0: 'batch_size', 2: 'height', 3: 'width'}}
+                      'rays': {0: 'batch_size', 1: 'n_rays'},
+                      'tangent_coords': {0: 'batch_size', 1: 'n_rays'}}
     )
     print(f"Model exported to {output_path}")
 
 if __name__ == "__main__":
-    export_to_onnx()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_id", type=str, default="anycalib_pinhole", 
+                        choices=["anycalib_pinhole", "anycalib_dist", "anycalib_gen", "anycalib_edit"])
+    parser.add_argument("--output", type=str, default=None)
+    args = parser.parse_args()
+    
+    if args.output is None:
+        args.output = f"{args.model_id}.onnx"
+        
+    export_to_onnx(args.model_id, args.output)

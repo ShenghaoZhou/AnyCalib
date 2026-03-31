@@ -23,8 +23,14 @@ class Logger : public nvinfer1::ILogger {
     }
 } gLogger;
 
+enum class ModelType {
+    PINHOLE,
+    KB4
+};
+
 struct CameraParams {
     float fx, fy, cx, cy;
+    float k1 = 0, k2 = 0, k3 = 0, k4 = 0;
 };
 
 class AnyCalibTRT {
@@ -72,7 +78,7 @@ public:
         delete runtime;
     }
 
-    CameraParams run(const cv::Mat& input_image) {
+    CameraParams run(const cv::Mat& input_image, ModelType model_type = ModelType::PINHOLE) {
         int ho = input_image.rows;
         int wo = input_image.cols;
 
@@ -95,14 +101,14 @@ public:
         context->setInputShape("image", input_dims);
 
         int image_idx = -1;
-        for (int i = 0; i < tensor_names.size(); ++i) {
+        for (int i = 0; i < (int)tensor_names.size(); ++i) {
             if (tensor_names[i] == "image") {
                 image_idx = i;
                 break;
             }
         }
         cudaMemcpy(buffers[image_idx], processed.data, (ht * wt * 3) * sizeof(float), cudaMemcpyHostToDevice);
-        for (int i = 0; i < tensor_names.size(); ++i) {
+        for (int i = 0; i < (int)tensor_names.size(); ++i) {
             context->setTensorAddress(tensor_names[i].c_str(), buffers[i]);
         }
         bool status = context->enqueueV3(0);
@@ -112,7 +118,7 @@ public:
         cudaStreamSynchronize(0);
 
         int rays_idx = -1;
-        for (int i = 0; i < tensor_names.size(); ++i) {
+        for (int i = 0; i < (int)tensor_names.size(); ++i) {
             if (tensor_names[i] == "rays") {
                 rays_idx = i;
                 break;
@@ -121,14 +127,19 @@ public:
         
         auto output_dims = context->getTensorShape(tensor_names[rays_idx].c_str());
         
-        size_t output_vol = 1;
-        for (int i = 0; i < output_dims.nbDims; ++i) output_vol *= output_dims.d[i];
+        size_t n_rays = output_dims.d[1];
+        size_t output_vol = n_rays * 3;
         
         std::vector<float> h_rays(output_vol);
         cudaMemcpy(h_rays.data(), buffers[rays_idx], output_vol * sizeof(float), cudaMemcpyDeviceToHost);
 
-        // 4. Post-process: Linear Least Squares for Pinhole parameters
-        CameraParams pred = linear_fit(h_rays, ht, wt);
+        // 4. Post-process: Linear Least Squares for chosen camera model
+        CameraParams pred;
+        if (model_type == ModelType::PINHOLE) {
+            pred = linear_fit_pinhole(h_rays, ht, wt);
+        } else if (model_type == ModelType::KB4) {
+            pred = linear_fit_kb4(h_rays, ht, wt);
+        }
 
         // 5. De-normalization of parameters (undo the initial crop/resize)
         // Formula: f_orig = f_pred / scale,  c_orig = (c_pred - shift) / scale
@@ -162,12 +173,12 @@ private:
         cv::Vec2f shift(0, 0);
         float ar_t = (float)wt / ht;
         if ((float)w / h > ar_t) {
-            int crop_w = std::round(w - h * ar_t);
+            int crop_w = (int)std::round(w - h * ar_t);
             int start_x = crop_w / 2;
             img = img(cv::Rect(start_x, 0, w - crop_w, h));
             shift[0] = -start_x;
         } else {
-            int crop_h = std::round(h - w / ar_t);
+            int crop_h = (int)std::round(h - w / ar_t);
             int start_y = crop_h / 2;
             img = img(cv::Rect(0, start_y, w, h - crop_h));
             shift[1] = -start_y;
@@ -180,10 +191,6 @@ private:
         scale_xy = cv::Mat(cv::Vec2f(s1_xy[0] * s2_xy[0], s1_xy[1] * s2_xy[1])).clone();
         shift_xy = cv::Mat(cv::Vec2f(shift[0] * s2_xy[0], shift[1] * s2_xy[1])).clone();
 
-        // NOTE: Do NOT normalize here. The DINOv2 backbone in the ONNX/TRT model
-        // already includes ImageNet normalization internally (in dinov2.py line 111).
-        // Input to the network should be RGB float in [0, 1].
-
         // Transform HWC to CHW planar format for the network
         std::vector<cv::Mat> channels(3);
         cv::split(img, channels);
@@ -193,24 +200,21 @@ private:
         }
     }
 
-    CameraParams linear_fit(const std::vector<float>& rays, int h, int w) {
+    CameraParams linear_fit_pinhole(const std::vector<float>& rays, int h, int w) {
         int n = h * w;
-        // Solve A*x = B separately for x and y focal/principal points
-        // System: u/N = (1/f)*X/Z + (c/f) where f is unknown
-        // Reparameterized as: X/Z = a*(u) - b where a=1/f, b=c/f
         cv::Mat Ax(n, 2, CV_32F), Ay(n, 2, CV_32F);
         cv::Mat Bx(n, 1, CV_32F), By(n, 1, CV_32F);
 
-        float N_u = w, N_v = h; // Norm factors for numerical stability
+        float N_u = w, N_v = h;
 
         for (int i = 0; i < h; ++i) {
             for (int j = 0; j < w; ++j) {
                 int idx = i * w + j;
-                float rz = std::max(rays[2 * n + idx], 1e-6f);
-                float x_z = rays[0 * n + idx] / rz;
-                float y_z = rays[1 * n + idx] / rz;
+                float rz = std::max(rays[idx * 3 + 2], 1e-6f);
+                float x_z = rays[idx * 3 + 0] / rz;
+                float y_z = rays[idx * 3 + 1] / rz;
 
-                float u = j + 0.5f; // Pixel centers
+                float u = j + 0.5f;
                 float v = i + 0.5f;
 
                 Ax.at<float>(idx, 0) = u / N_u;
@@ -235,6 +239,73 @@ private:
         return {fx, fy, cx, cy};
     }
 
+    CameraParams linear_fit_kb4(const std::vector<float>& rays, int h, int w) {
+        int n = h * w;
+        // Variables: [1/fx, 1/fy, cx/fx, cy/fy, k1, k2, k3, k4]
+        cv::Mat A(2 * n, 8, CV_32F);
+        cv::Mat B(2 * n, 1, CV_32F);
+
+        for (int i = 0; i < h; ++i) {
+            for (int j = 0; j < w; ++j) {
+                int idx = i * w + j;
+                float rx = rays[idx * 3 + 0];
+                float ry = rays[idx * 3 + 1];
+                float rz = rays[idx * 3 + 2];
+                float r2d = std::sqrt(rx * rx + ry * ry);
+                float theta = std::atan2(r2d, rz);
+                float eps = 1e-9f;
+                float r2d_clamp = std::max(r2d, eps);
+
+                float bx = theta * rx / r2d_clamp;
+                float by = theta * ry / r2d_clamp;
+
+                float u = j + 0.5f;
+                float v = i + 0.5f;
+
+                float theta2 = theta * theta;
+                float theta4 = theta2 * theta2;
+                float theta6 = theta4 * theta2;
+                float theta8 = theta4 * theta4;
+
+                // Row for u
+                A.at<float>(2 * idx, 0) = u;
+                A.at<float>(2 * idx, 1) = 0;
+                A.at<float>(2 * idx, 2) = -1.0f;
+                A.at<float>(2 * idx, 3) = 0;
+                A.at<float>(2 * idx, 4) = -theta2 * bx;
+                A.at<float>(2 * idx, 5) = -theta4 * bx;
+                A.at<float>(2 * idx, 6) = -theta6 * bx;
+                A.at<float>(2 * idx, 7) = -theta8 * bx;
+                B.at<float>(2 * idx) = bx;
+
+                // Row for v
+                A.at<float>(2 * idx + 1, 0) = 0;
+                A.at<float>(2 * idx + 1, 1) = v;
+                A.at<float>(2 * idx + 1, 2) = 0;
+                A.at<float>(2 * idx + 1, 3) = -1.0f;
+                A.at<float>(2 * idx + 1, 4) = -theta2 * by;
+                A.at<float>(2 * idx + 1, 5) = -theta4 * by;
+                A.at<float>(2 * idx + 1, 6) = -theta6 * by;
+                A.at<float>(2 * idx + 1, 7) = -theta8 * by;
+                B.at<float>(2 * idx + 1) = by;
+            }
+        }
+
+        cv::Mat sol;
+        cv::solve(A, B, sol, cv::DECOMP_SVD);
+
+        float fx = 1.0f / sol.at<float>(0);
+        float fy = 1.0f / sol.at<float>(1);
+        float cx = sol.at<float>(2) * fx;
+        float cy = sol.at<float>(3) * fy;
+        float k1 = sol.at<float>(4);
+        float k2 = sol.at<float>(5);
+        float k3 = sol.at<float>(6);
+        float k4 = sol.at<float>(7);
+
+        return {fx, fy, cx, cy, k1, k2, k3, k4};
+    }
+
     nvinfer1::IRuntime* runtime;
     nvinfer1::ICudaEngine* engine;
     nvinfer1::IExecutionContext* context;
@@ -245,8 +316,18 @@ private:
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <engine_path> <image_path>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <engine_path> <image_path> [model_type: pinhole|kb4]" << std::endl;
         return -1;
+    }
+
+    std::string model_type_str = "pinhole";
+    if (argc >= 4) {
+        model_type_str = argv[3];
+    }
+
+    ModelType model_type = ModelType::PINHOLE;
+    if (model_type_str == "kb4") {
+        model_type = ModelType::KB4;
     }
 
     try {
@@ -257,14 +338,20 @@ int main(int argc, char** argv) {
             return -1;
         }
 
-        CameraParams res = model.run(img);
+        CameraParams res = model.run(img, model_type);
 
-        std::cout << "\n=== Predicted Camera Intrinsic Parameters ===" << std::endl;
+        std::cout << "\n=== Predicted Camera Intrinsic Parameters (" << model_type_str << ") ===" << std::endl;
         std::cout << "Image Resolution: " << img.cols << "x" << img.rows << std::endl;
-        std::cout << "Focal Length $fx: " << res.fx << std::endl;
-        std::cout << "Focal Length $fy: " << res.fy << std::endl;
-        std::cout << "Principal Point $cx: " << res.cx << std::endl;
-        std::cout << "Principal Point $cy: " << res.cy << std::endl;
+        std::cout << "Focal Length fx: " << res.fx << std::endl;
+        std::cout << "Focal Length fy: " << res.fy << std::endl;
+        std::cout << "Principal Point cx: " << res.cx << std::endl;
+        std::cout << "Principal Point cy: " << res.cy << std::endl;
+        if (model_type == ModelType::KB4) {
+            std::cout << "K1: " << res.k1 << std::endl;
+            std::cout << "K2: " << res.k2 << std::endl;
+            std::cout << "K3: " << res.k3 << std::endl;
+            std::cout << "K4: " << res.k4 << std::endl;
+        }
         std::cout << "==============================================\n" << std::endl;
 
     } catch (const std::exception& e) {

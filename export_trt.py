@@ -1,5 +1,6 @@
 import tensorrt as trt
 import os
+import argparse
 
 def build_engine(onnx_file_path, engine_file_path):
     TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
@@ -26,11 +27,19 @@ def build_engine(onnx_file_path, engine_file_path):
     profile.set_shape("image", (1, 3, 112, 112), (1, 3, 322, 322), (1, 3, 1022, 1022))
     config.add_optimization_profile(profile)
 
-    print(f"Building engine: {engine_file_path}...")
+    print(f"Building engine: {engine_file_path} from {onnx_file_path}...")
     engine_bytes = builder.build_serialized_network(network, config)
     with open(engine_file_path, "wb") as f:
         f.write(engine_bytes)
     print("Done!")
 
 if __name__ == "__main__":
-    build_engine("anycalib_nn.onnx", "anycalib_nn.engine")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--onnx", type=str, default="anycalib_pinhole.onnx")
+    parser.add_argument("--engine", type=str, default=None)
+    args = parser.parse_args()
+    
+    if args.engine is None:
+        args.engine = args.onnx.replace(".onnx", ".engine")
+        
+    build_engine(args.onnx, args.engine)
