@@ -27,7 +27,7 @@ eff = ["xformers>=0.0.27"]
 viz = ["matplotlib"]
 
 [tool.pixi.workspace]
-channels = ["conda-forge"]
+channels = ["conda-forge", "https://prefix.dev/spqr-tests"]
 platforms = ["linux-64"]
 
 [tool.pixi.system-requirements]
@@ -52,6 +52,18 @@ pytorch-gpu = "*"
 torchvision = "*"
 onnx = "*"
 onnxscript = "*"
+cmake = ">=4.3.1,<5"
+ninja = ">=1.13.2,<2"
+pip = ">=26.0.1,<27"
+libopencv = ">=4.13.0,<5"
+pkg-config = ">=0.29.2,<0.30"
+cxx-compiler = ">=1.11.0,<2"
+make = ">=4.4.1,<5"
+cuda-compiler = ">=12.9.1,<13"
+tensorrt-cxx-full = ">=10.13.2.6,<11"
+tensorrt-cxx-onnx = ">=10.13.2.6,<11"
+tensorrt-cxx-plugins = ">=10.13.2.6,<11"
+cuda-runtime = "*"
 
 [tool.pixi.pypi-dependencies]
 anycalib = { path = ".", editable = true }
