@@ -20,7 +20,7 @@ description = "AnyCalib - Single View Calibration"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-dependencies = ["torch"]
+dependencies = ["torch", "tensorrt>=10.16.0.72,<11"]
 
 [project.optional-dependencies]
 eff = ["xformers>=0.0.27"]
@@ -63,7 +63,8 @@ cuda-compiler = ">=12.9.1,<13"
 tensorrt-cxx-full = ">=10.13.2.6,<11"
 tensorrt-cxx-onnx = ">=10.13.2.6,<11"
 tensorrt-cxx-plugins = ">=10.13.2.6,<11"
-cuda-runtime = "*"
+cuda-runtime = ">=12.9.1,<13"
+cuda-cudart = ">=12.9.79,<13"
 
 [tool.pixi.pypi-dependencies]
 anycalib = { path = ".", editable = true }

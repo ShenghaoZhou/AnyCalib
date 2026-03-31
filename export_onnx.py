@@ -10,6 +10,7 @@ class AnyCalibNN(nn.Module):
         self.backbone = full_model.backbone
         self.decoder = full_model.decoder
         self.head = full_model.head
+        self.backbone.model.interpolate_offset = 0.0 # Fix for dynamic shape export
         self.eval()
 
     def forward(self, image):

@@ -2,6 +2,7 @@
 #include <fstream>
 #include <vector>
 #include <numeric>
+#include <cmath>
 #include <opencv2/opencv.hpp>
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
@@ -47,9 +48,14 @@ public:
         // Automatically detect buffer sizes
         for (int i = 0; i < engine->getNbIOTensors(); ++i) {
             auto name = engine->getIOTensorName(i);
-            auto dims = engine->getTensorShape(name);
+            
+            // For dynamic shapes, we need to allocate for the maximum possible size
+            auto max_dims = engine->getProfileShape(name, 0, nvinfer1::OptProfileSelector::kMAX);
             size_t vol = 1;
-            for (int j = 0; j < dims.nbDims; ++j) vol *= dims.d[j];
+            for (int j = 0; j < max_dims.nbDims; ++j) {
+                if (max_dims.d[j] > 0) vol *= max_dims.d[j];
+            }
+            if (vol < 3 * 1024 * 1024) vol = 3 * 1024 * 1024; // Force at least 12MB per tensor
             
             void* device_ptr;
             cudaMalloc(&device_ptr, vol * sizeof(float));
@@ -74,23 +80,52 @@ public:
         // DINOv2 requires dimensions to be multiples of 14.
         float target_res = 102400.0f;
         float ar = std::max(0.5f, std::min((float)ho / wo, 2.0f));
-        int wt = std::round(std::sqrt(target_res / ar) / 14) * 14;
-        int ht = std::round((ar * wt) / 14) * 14;
+        float w_ideal = std::sqrt(target_res / ar);
+        float h_ideal = ar * w_ideal;
+        int wt = std::round(w_ideal / 14) * 14;
+        int ht = std::round(h_ideal / 14) * 14;
 
         // 2. Preprocess: Center Crop and Normalize
         cv::Mat processed, scale_xy, shift_xy;
         preprocess(input_image, processed, ht, wt, scale_xy, shift_xy);
 
         // 3. TensorRT Inference
-        cudaMemcpy(buffers[0], processed.data, tensor_sizes[0] * sizeof(float), cudaMemcpyHostToDevice);
+        // Set dynamic input shape
+        nvinfer1::Dims4 input_dims{1, 3, ht, wt};
+        context->setInputShape("image", input_dims);
+
+        int image_idx = -1;
+        for (int i = 0; i < tensor_names.size(); ++i) {
+            if (tensor_names[i] == "image") {
+                image_idx = i;
+                break;
+            }
+        }
+        cudaMemcpy(buffers[image_idx], processed.data, (ht * wt * 3) * sizeof(float), cudaMemcpyHostToDevice);
         for (int i = 0; i < tensor_names.size(); ++i) {
             context->setTensorAddress(tensor_names[i].c_str(), buffers[i]);
         }
-        context->enqueueV3(0);
+        bool status = context->enqueueV3(0);
+        if (!status) {
+            std::cerr << "TensorRT enqueueV3 failed!" << std::endl;
+        }
+        cudaStreamSynchronize(0);
 
-        // Assuming output index 1 is "rays" (3 channels per pixel)
-        std::vector<float> h_rays(tensor_sizes[1]);
-        cudaMemcpy(h_rays.data(), buffers[1], tensor_sizes[1] * sizeof(float), cudaMemcpyDeviceToHost);
+        int rays_idx = -1;
+        for (int i = 0; i < tensor_names.size(); ++i) {
+            if (tensor_names[i] == "rays") {
+                rays_idx = i;
+                break;
+            }
+        }
+        
+        auto output_dims = context->getTensorShape(tensor_names[rays_idx].c_str());
+        
+        size_t output_vol = 1;
+        for (int i = 0; i < output_dims.nbDims; ++i) output_vol *= output_dims.d[i];
+        
+        std::vector<float> h_rays(output_vol);
+        cudaMemcpy(h_rays.data(), buffers[rays_idx], output_vol * sizeof(float), cudaMemcpyDeviceToHost);
 
         // 4. Post-process: Linear Least Squares for Pinhole parameters
         CameraParams pred = linear_fit(h_rays, ht, wt);
@@ -173,9 +208,9 @@ private:
         for (int i = 0; i < h; ++i) {
             for (int j = 0; j < w; ++j) {
                 int idx = i * w + j;
-                float rz = std::max(rays[idx * 3 + 2], 1e-6f);
-                float x_z = rays[idx * 3 + 0] / rz;
-                float y_z = rays[idx * 3 + 1] / rz;
+                float rz = std::max(rays[2 * n + idx], 1e-6f);
+                float x_z = rays[0 * n + idx] / rz;
+                float y_z = rays[1 * n + idx] / rz;
 
                 float u = j + 0.5f; // Pixel centers
                 float v = i + 0.5f;
