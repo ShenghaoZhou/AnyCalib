@@ -180,11 +180,9 @@ private:
         scale_xy = cv::Mat(cv::Vec2f(s1_xy[0] * s2_xy[0], s1_xy[1] * s2_xy[1])).clone();
         shift_xy = cv::Mat(cv::Vec2f(shift[0] * s2_xy[0], shift[1] * s2_xy[1])).clone();
 
-        // Standard DINOv2 / ImageNet normalization
-        cv::Scalar mean(0.485, 0.456, 0.406);
-        cv::Scalar std(0.229, 0.224, 0.225);
-        cv::subtract(img, mean, img);
-        cv::divide(img, std, img);
+        // NOTE: Do NOT normalize here. The DINOv2 backbone in the ONNX/TRT model
+        // already includes ImageNet normalization internally (in dinov2.py line 111).
+        // Input to the network should be RGB float in [0, 1].
 
         // Transform HWC to CHW planar format for the network
         std::vector<cv::Mat> channels(3);
